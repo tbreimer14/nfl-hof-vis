@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Interactive Heatmap</title>
+    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        #vis { margin-top: 20px; cursor: pointer; } /* Add cursor pointer */
+    </style>
+</head>
+<body>
+    <h1>Model Trainer & Visualizer</h1>
+    
+    <div class="controls">
+        <label>Learning Rate: <input type="number" id="lr" value="0.1" step="0.01"></label>
+        <label>Epochs: <input type="number" id="epochs" value="50"></label>
+        <button onclick="runTraining()">Train Model</button>
+    </div>
+
+    <div id="vis"></div>
+
+    <script>
+        async function runTraining() {
+            const lr = parseFloat(document.getElementById('lr').value);
+            const epochs = parseInt(document.getElementById('epochs').value);
+
+            const response = await fetch('http://127.0.0.1:8000/train-and-visualize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ learning_rate: lr, epochs: epochs })
+            });
+            const spec = await response.json();
+
+            vegaEmbed('#vis', spec).then(result => {
+                const view = result.view;
+                
+                view.addEventListener('click', function(event, item) {
+                    if (item && item.datum) {
+                        console.log("Clicked:", item.datum);
+                        sendClick(item.datum);
+                    }
+                });
+            });
+        }
+
+        async function sendClick(data) {
+        await fetch('http://127.0.0.1:8000/log-click', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                row_index: data.RowIndex,
+                column_name: data.variable, 
+                value: String(data.value)
+            })
+        });
+        }
+    </script>
+</body>
+</html>
