@@ -2,25 +2,42 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Interactive Heatmap</title>
+    <title>nfl-hof-vis</title>
     <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
     <style>
         body { font-family: sans-serif; padding: 20px; }
-        #vis { margin-top: 20px; cursor: pointer; } /* Add cursor pointer */
+        #vis { margin-top: 20px; cursor: pointer; }
+        .container {
+        display: flex;           
+        flex-direction: row;      
+        align-items: flex-start;  
+        gap: 20px;                 
+        }
+        .container2 {
+            display: flex;             
+            flex-direction: column;   
+            gap: 20px;  
+            align-items: center;              
+        }
     </style>
 </head>
 <body>
-    <h1>Model Trainer & Visualizer</h1>
-    
+
     <div class="controls">
-        <label>Learning Rate: <input type="number" id="lr" value="0.1" step="0.01"></label>
-        <label>Epochs: <input type="number" id="epochs" value="50"></label>
+        <label>Learning Rate: <input type="number" id="lr" value="0.01" step="0.001"></label>
+        <label>Epochs: <input type="number" id="epochs" value="20"></label>
         <button onclick="runTraining()">Train Model</button>
     </div>
 
-    <div id="vis"></div>
+    <div class="container">
+         <div id="vis"></div>
+         <div class="container2">
+            <div id="influence"></div>
+            <div id="stats"></div>
+         </div>
+    </div>   
 
     <script>
         async function runTraining() {
@@ -33,29 +50,51 @@
                 body: JSON.stringify({ learning_rate: lr, epochs: epochs })
             });
             const spec = await response.json();
-
-            vegaEmbed('#vis', spec).then(result => {
-                const view = result.view;
-                
-                view.addEventListener('click', function(event, item) {
-                    if (item && item.datum) {
-                        console.log("Clicked:", item.datum);
-                        sendClick(item.datum);
-                    }
-                });
+            
+            // Render the Validation Matrix
+            const result = await vegaEmbed('#vis', spec);
+            
+            // Add click listener to the matrix
+            result.view.addEventListener('click', function(event, item) {
+                if (item && item.datum && item.datum.RowIndex !== undefined) {
+                    fetchInfluenceChart(item.datum.RowIndex);
+                }
             });
         }
 
-        async function sendClick(data) {
-        await fetch('http://127.0.0.1:8000/log-click', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                row_index: data.RowIndex,
-                column_name: data.variable, 
-                value: String(data.value)
-            })
-        });
+        async function fetchInfluenceChart(rowIndex) {
+            console.log("Fetching influence for row:", rowIndex);
+            
+            const response = await fetch('http://127.0.0.1:8000/get-influence', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ row_index: rowIndex })
+            });
+            
+            const spec = await response.json();
+            
+            // Render the Influence Chart
+            const result = await vegaEmbed('#influence', spec);
+
+            // Add click listener to the Influence Chart bars
+            result.view.addEventListener('click', function(event, item) {
+                if (item && item.datum && item.datum.TrainIndex !== undefined) {
+                    sendTrainClick(item.datum.TrainIndex);
+                }
+            });
+        }
+
+        async function sendTrainClick(trainIndex) {
+        console.log("Sending Training Click:", trainIndex);
+        
+            const response = await fetch('http://127.0.0.1:8000/log-train-click', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ train_index: trainIndex })
+            });
+
+            const spec = await response.json();
+            await vegaEmbed('#stats', spec);
         }
     </script>
 </body>

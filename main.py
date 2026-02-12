@@ -13,6 +13,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
 from pydvl.influence.torch import DirectInfluence
+import torch.nn.functional as F
 
 app = FastAPI()
 
@@ -24,6 +25,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+class ClickRequest(BaseModel):
+    row_index: int
+    column_name: str
+    value: str
 
 class InteractionRequest(BaseModel):
     train_id: int
@@ -79,6 +85,7 @@ def get_processed_data():
     # Drop non-feature columns
     features_to_drop = ['QBrec', 'HOF', 'Name']
     
+    # X is still a Pandas DataFrame here, so it has column names
     X = df.drop(columns=features_to_drop, errors='ignore')
     X = X.fillna(0)
     y = df[target]
@@ -86,7 +93,7 @@ def get_processed_data():
     # Split
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Get Names corresponding to the split (Preserve indices initially)
+    # Get Names corresponding to the split
     train_names = df['Name'].loc[X_train.index]
     val_names = df['Name'].loc[X_val.index]
 
@@ -102,6 +109,10 @@ def get_processed_data():
     _data_cache["train_names"] = train_names
     _data_cache["val_names"] = val_names
     _data_cache["input_dim"] = X_train.shape[1]
+    _data_cache["scaler"] = scaler
+    
+    # CHANGE IS HERE: Use X.columns.tolist() instead of generating "Feat i"
+    _data_cache["feature_names"] = X.columns.tolist()
     
     return _data_cache
 
@@ -112,6 +123,7 @@ def train_model(req: TrainRequest):
     X_val, y_val = data["X_val"], data["y_val"]
     
     train_dataset = QBDataSet(X_train, y_train.values)
+    val_dataset = QBDataSet(X_val, y_val.values)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     
     model = HOFPredictor(input_dim=data["input_dim"], num_classes=2)
@@ -133,13 +145,20 @@ def train_model(req: TrainRequest):
         outputs = model(X_val_tensor)
         y_pred = outputs.argmax(dim=1).numpy()
 
+    infl_model = DirectInfluence(model, nn.CrossEntropyLoss(), regularization=0.01)
+    infl_model = infl_model.fit(train_loader)
+    influences = infl_model.influences(val_dataset.X, val_dataset.y, train_dataset.X, train_dataset.y)
+
+    influences = influences.cpu().numpy()
+    _data_cache["influences"] = influences
+    _data_cache["model"] = model
+
     val_df = pd.DataFrame({
         'Name': data["val_names"].values, 
         'Actual': y_val.values,
         'Predicted': y_pred
     })
     
-    # 1. Create the base DataFrame
     val_df = pd.DataFrame({
         'Name': data["val_names"].values, 
         'Actual': y_val.values,
@@ -149,35 +168,22 @@ def train_model(req: TrainRequest):
     val_df['RowIndex'] = val_df.index
     val_df['Correct'] = val_df['Actual'] == val_df['Predicted']
 
-    # 2. MELT (Simplified)
-    # Only keep 'RowIndex' as the identifier to avoid the overlap bug.
     melted_df = val_df.melt(
-        id_vars=['RowIndex'], 
-        value_vars=['Name', 'Actual', 'Predicted'],
-        var_name='ColumnName',
-        value_name='ValueAsString' 
+    id_vars=['RowIndex'], 
+    value_vars=['Name', 'Actual', 'Predicted'],
+    var_name='ColumnName',
+    value_name='ValueAsString'   
     )
 
-    # 3. MERGE (The "Vlookup" Step)
-    # We bring the original context (Correct, Name, Actual, Predicted) back 
-    # by joining on 'RowIndex'.
     final_df = pd.merge(melted_df, val_df, on='RowIndex')
-
-    # Debug Prints
-    print(f"Rows in val_df: {len(val_df)}")
-    print(f"Rows in final_df: {len(final_df)}") # Should be 37 * 3 = 111
-
-    # 4. Create Chart
     alt.data_transformers.disable_max_rows()
 
     base = alt.Chart(final_df).encode(
         y=alt.Y('RowIndex:O', title=None),
-        # We use the new merged columns for sorting
         x=alt.X('ColumnName:O', title=None, sort=['Name', 'Actual', 'Predicted'])
     )
 
     rects = base.mark_rect().encode(
-        # We can now access 'Correct' safely because we merged it back in
         color=alt.Color('Correct:N', 
                         scale=alt.Scale(domain=[True, False], range=["#00ffcc", "#ff0000"]),
                         legend=alt.Legend(title="Prediction Correct?")),
@@ -197,14 +203,131 @@ def train_model(req: TrainRequest):
     return chart.to_dict()
 
 
-@app.post("/log-interaction")
-async def log_interaction(interaction: InteractionRequest):
-    print(f"User clicked cell: Train={interaction.train_id}, Test={interaction.test_id}, Val={interaction.influence:.4f}")
-    return {"status": "logged"}
+class InfluenceRequest(BaseModel):
+    row_index: int
+
+@app.post("/get-influence")
+def get_influence(req: InfluenceRequest):
+    if "influences" not in _data_cache:
+        raise HTTPException(status_code=500, detail="Influence model not trained yet")
+    
+    _data_cache['last_clicked_val_index'] = req.row_index
+    
+    influences = _data_cache["influences"]
+    train_names = _data_cache["train_names"].values
+    
+    row_influences = influences[req.row_index]
+    
+    top_pos_indices = np.argsort(row_influences)[-5:]
+    top_neg_indices = np.argsort(row_influences)[:5]
+    combined_indices = np.concatenate([top_neg_indices, top_pos_indices])
+
+    combined_values = row_influences[combined_indices]
+    combined_names = train_names[combined_indices]
+    
+    df = pd.DataFrame({
+        'TrainIndex': combined_indices,
+        'Name': combined_names,
+        'Influence': combined_values,
+        'Type': ['Opponent' if x < 0 else 'Proponent' for x in combined_values]
+    })
+
+    base = alt.Chart(df).encode(
+        # Sort x-axis by Influence value descending
+        x=alt.X('Name:N', sort=alt.EncodingSortField(field="Influence", order="descending"), axis=alt.Axis(labelAngle=-45)),
+        y=alt.Y('Influence:Q'),
+        tooltip=['Name', 'Influence', 'TrainIndex', 'Type']
+    )
+
+    bars = base.mark_bar().encode(
+        color=alt.Color('Type:N', scale=alt.Scale(domain=['Proponent', 'Opponent'], range=['green', 'red']))
+    )
+
+    chart = bars.properties(
+        title=f"Top Influencers for Validation Point #{req.row_index}",
+        width=600,
+        height=300
+    )
+    return chart.to_dict()
+
+class TrainClickRequest(BaseModel):
+    train_index: int
+
+@app.post("/log-train-click")
+def log_train_click(req: TrainClickRequest):
+    if "last_clicked_val_index" not in _data_cache:
+         raise HTTPException(status_code=400, detail="No validation player selected.")
+
+    val_idx = _data_cache["last_clicked_val_index"]
+    train_idx = req.train_index
+    
+    val_name = str(_data_cache["val_names"].values[val_idx])
+    train_name = str(_data_cache["train_names"].values[train_idx])
+    
+    scaler = _data_cache["scaler"]
+    val_vec_norm = _data_cache["X_val"][val_idx]
+    train_vec_norm = _data_cache["X_train"][train_idx]
+    
+    val_vec_raw = scaler.inverse_transform(val_vec_norm.reshape(1, -1))[0]
+    train_vec_raw = scaler.inverse_transform(train_vec_norm.reshape(1, -1))[0]
+    
+    val_hof = "Yes" if _data_cache["y_val"].iloc[val_idx] == 1 else "No"
+    train_hof = "Yes" if _data_cache["y_train"].iloc[train_idx] == 1 else "No"
+
+    stats_data = []
+    features = _data_cache["feature_names"]
+    
+    stats_data.append({"Stat": "HOF Status", "Column": val_name, "Value": val_hof, "IsDiff": False, "IsHOF": True, "NumericDiff": 0})
+    stats_data.append({"Stat": "HOF Status", "Column": train_name, "Value": train_hof, "IsDiff": False, "IsHOF": True, "NumericDiff": 0})
+    stats_data.append({"Stat": "HOF Status", "Column": "Diff", "Value": "-", "IsDiff": True, "IsHOF": True, "NumericDiff": 0})
+
+    for i, feat in enumerate(features):
+        v_val = float(val_vec_raw[i])
+        t_val = float(train_vec_raw[i])
+        diff = t_val - v_val
+        
+        stats_data.append({"Stat": feat, "Column": val_name, "Value": f"{v_val:,.1f}", "IsDiff": False, "IsHOF": False, "NumericDiff": 0})
+        stats_data.append({"Stat": feat, "Column": train_name, "Value": f"{t_val:,.1f}", "IsDiff": False, "IsHOF": False, "NumericDiff": 0})
+        stats_data.append({"Stat": feat, "Column": "Diff", "Value": f"{diff:+,.1f}", "IsDiff": True, "NumericDiff": diff, "IsHOF": False})
+
+    df = pd.DataFrame(stats_data)
+
+    # Altair Chart
+    base = alt.Chart(df).encode(
+        y=alt.Y('Stat:O', sort=None, title=None),
+        x=alt.X('Column:O', title=None, sort=[val_name, train_name, "Diff"])
+    )
+
+    # Layer A: Heatmap for Numeric Diffs
+    diff_bg = base.mark_rect().encode(
+        color=alt.Color('NumericDiff:Q', scale=alt.Scale(scheme="redyellowgreen", domainMid=0), legend=None)
+    ).transform_filter(
+        (alt.datum.IsDiff == True) & (alt.datum.IsHOF == False)
+    )
+
+    # Layer B: Grey for HOF rows
+    hof_bg = base.mark_rect().encode(
+        color=alt.value('#f0f0f0')
+    ).transform_filter(
+        alt.datum.IsHOF == True
+    )
+
+    # Text Labels
+    text = base.mark_text().encode(
+        text='Value:N',
+        color=alt.value('black')
+    )
+
+    # Combine them: Diff Background + HOF Background + Text
+    chart = (diff_bg + hof_bg + text).properties(
+        title=f"Comparison: {val_name} vs {train_name}",
+        width=400
+    )
+
+    return chart.to_dict()
 
 
 async def main():
-    # Call and wait for the result
     result = train_model(TrainRequest(learning_rate=0.001, epochs=20)) 
     print(f"Received result: {result}")
     
