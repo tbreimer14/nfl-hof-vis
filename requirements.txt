@@ -5,4 +5,7 @@ pandas
 scikit-learn
 shap
 pyDVL
+torch
+distributed
+zarr
 numpy<2.0.0
