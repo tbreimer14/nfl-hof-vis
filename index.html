@@ -2,100 +2,334 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>nfl-hof-vis</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XAI: SHAP vs Influence</title>
     <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
     <style>
-        body { font-family: sans-serif; padding: 20px; }
-        #vis { margin-top: 20px; cursor: pointer; }
-        .container {
-        display: flex;           
-        flex-direction: row;      
-        align-items: flex-start;  
-        gap: 20px;                 
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; background-color: #f4f4f9; }
+        
+        header { background-color: #333; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .nav-buttons button { background: none; border: none; color: #ccc; font-size: 16px; cursor: pointer; margin-right: 20px; padding-bottom: 5px; }
+        .nav-buttons button.active { color: white; border-bottom: 2px solid #008bfb; }
+        .generate-btn { background-color: #008bfb; color: white; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+        .generate-btn:hover { background-color: #0070c9; }
+
+        .container { display: flex; flex: 1; overflow: hidden; }
+        .sidebar { width: 350px; background: white; border-right: 1px solid #ddd; overflow-y: auto; display: flex; flex-direction: column; }
+        
+        table { width: 100%; border-collapse: collapse; }
+        th { background-color: #eee; position: sticky; top: 0; padding: 10px; text-align: left; font-size: 14px; z-index: 10;}
+        td { padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; cursor: pointer; }
+        tr:hover td { filter: brightness(0.95); } /* Adjusted hover for colored rows */
+        tr.selected td { 
+            border-top: 2px solid #00b5e2; 
+            border-bottom: 2px solid #00b5e2; 
+            background-color: rgba(0, 181, 226, 0.15) !important; 
         }
-        .container2 {
-            display: flex;             
-            flex-direction: column;   
-            gap: 20px;  
-            align-items: center;              
+        /* Add a thick Cyan border on the left side to really make it pop */
+        tr.selected td:first-child { 
+            border-left: 4px solid #00b5e2; 
         }
+
+        .main-content { flex: 1; padding: 20px; overflow-y: auto; }
+        
+        /* FIX: Move Vega Bindings to the Bottom */
+        .vega-embed { display: flex !important; flex-direction: column !important; width: 100%; }
+        .vega-bindings { order: 2 !important; display: flex; justify-content: center; gap: 30px; margin-top: 20px; padding: 15px; background: #f9f9f9; border-radius: 8px; border: 1px solid #e0e0e0; }
     </style>
 </head>
 <body>
 
-    <div class="controls">
-        <label>Learning Rate: <input type="number" id="lr" value="0.01" step="0.001"></label>
-        <label>Epochs: <input type="number" id="epochs" value="20"></label>
-        <button onclick="runTraining()">Train Model</button>
-    </div>
+    <header>
+        <div class="nav-buttons">
+            <button id="btn-influence" onclick="setTab('influence')">Influence (Data)</button>
+            <button id="btn-shap" class="active" onclick="setTab('shap')">SHAP (Features)</button>
+        </div>
+    </header>
 
     <div class="container">
-         <div id="vis"></div>
-         <div class="container2">
-            <div id="influence"></div>
-            <div id="stats"></div>
-         </div>
-    </div>   
+        <div class="sidebar">
+            <table id="results-table">
+                <thead>
+                    <tr>
+                        <th>Player</th>
+                        <th>Actual</th>
+                        <th>Pred. Prob</th>
+                    </tr>
+                </thead>
+                <tbody id="table-body">
+                    </tbody>
+            </table>
+        </div>
+
+        <div class="main-content">
+            <div id="dashboard-layout" style="display: flex; width: 100%; gap: 20px; align-items: flex-start;">
+                
+                <div id="vis-container" style="flex: 2; background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); min-height: 700px; display: flex; align-items: center; justify-content: center;">
+                    <div id="vis" style="width: 100%; text-align: center;">
+                        <p class="instructions" style="color: #999; font-size: 18px;">Select a player from the table and click "Generate Values" to begin.</p>
+                    </div>
+                </div>
+                
+                <div id="side-panels" style="flex: 1; display: flex; flex-direction: column; gap: 20px;">
+                    
+                    <div id="comparison-panel" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: 700px; overflow-y: auto; display: none;">
+                        <h3 style="margin-top: 0; margin-bottom: 5px;">Stat Comparison</h3>
+                        <h4 id="compare-title" style="margin-top: 0; color: #999; font-weight: normal; font-style: italic;">Awaiting training point selection...</h4>
+                        <table style="width: 100%; border-collapse: collapse; text-align: left;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid #ccc;">
+                                    <th style="padding: 10px 5px; background: white;">Feature</th>
+                                    <th id="th-test" style="padding: 10px 5px; background: white;">Test</th>
+                                    <th id="th-train" style="padding: 10px 5px; background: white;">Train</th>
+                                    <th style="padding: 10px 5px; background: white;">Diff</th>
+                                </tr>
+                            </thead>
+                            <tbody id="compare-body"></tbody>
+                        </table>
+                    </div>
+                    
+                    <div>
+                        <div style="background: #f4f9ff; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #cce5ff; text-align: center;">
+                            <h4 style="margin: 0; color: #555; text-transform: uppercase; font-size: 12px; letter-spacing: 1px;">Adjusted Prediction</h4>
+                            <div id="new-prediction-display" style="font-size: 36px; font-weight: bold; color: #008bfb; margin-top: 5px;">--%</div>
+                        </div>
+                    <div id="shap-panel" style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); height: 700px; overflow-y: auto; display: block;">
+                        <h3 style="margin-top: 0; margin-bottom: 5px;">What-If Simulator</h3>
+                        <p style="color: #666; font-size: 14px; margin-top: 0;">Adjust the top features to see how the model reacts.</p>
+                        <div id="sliders-container" style="display: flex; flex-direction: column; gap: 15px; margin-top: 20px;">
+                            </div>
+                    </div>
+                    </div>
+                    
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script>
-        async function runTraining() {
-            const lr = parseFloat(document.getElementById('lr').value);
-            const epochs = parseInt(document.getElementById('epochs').value);
+        const API_BASE = "http://localhost:8000/api";
+        let currentTab = 'shap';
+        let selectedPlayerIndex = null;
+        let currentOverrides = {};
 
-            const response = await fetch('http://127.0.0.1:8000/train-and-visualize', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ learning_rate: lr, epochs: epochs })
+        // Fetch table data on load
+        window.onload = async () => {
+            try {
+                const response = await fetch(`${API_BASE}/test_results`);
+                const data = await response.json();
+                populateTable(data);
+            } catch (error) {
+                console.error("Error fetching data:", error);
+                document.getElementById('table-body').innerHTML = "<tr><td colspan='3'>Error loading data.</td></tr>";
+            }
+        };
+
+        function populateTable(data) {
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = '';
+            
+            data.forEach(row => {
+                const tr = document.createElement('tr');
+                tr.onclick = () => handlePlayerSelection(tr, row.index);
+                
+                // Color formatting: Gold for HOF (1), Gray for Not HOF (0)
+                const actualColor = row.actual === 1 ? 'rgba(212, 175, 55, 0.25)' : 'rgba(153, 153, 153, 0.25)';
+                
+                // Switch to a clean blue opacity scale for the prediction column
+                const probAlpha = 0.1 + (row.predicted * 0.5); 
+                const probColor = `rgba(0, 139, 251, ${probAlpha})`;
+                
+                tr.innerHTML = `
+                    <td style="background-color: ${actualColor}">${row.player}</td>
+                    <td style="background-color: ${actualColor}; text-align: center;">${row.actual}</td>
+                    <td style="background-color: ${probColor}; text-align: center; font-weight: bold;">${row.predicted.toFixed(2)}</td>
+                `;
+                tbody.appendChild(tr);
             });
-            const spec = await response.json();
+        }
+
+        function handlePlayerSelection(rowElement, index) {
+            // Update table UI
+            document.querySelectorAll('#results-table tr').forEach(r => r.classList.remove('selected'));
+            rowElement.classList.add('selected');
             
-            // Render the Validation Matrix
-            const result = await vegaEmbed('#vis', spec);
-            
-            // Add click listener to the matrix
-            result.view.addEventListener('click', function(event, item) {
-                if (item && item.datum && item.datum.RowIndex !== undefined) {
-                    fetchInfluenceChart(item.datum.RowIndex);
+            // State Management: Only wipe sliders/tables if it's a DIFFERENT player
+            if (selectedPlayerIndex !== index) {
+                selectedPlayerIndex = index;
+                currentOverrides = {}; 
+                
+                // NEW: Clear the comparison table so old data doesn't persist!
+                // (Note: adjust 'comparison-table-body' if your actual table ID is slightly different)
+                const comparisonBody = document.getElementById('comparison-table-body');
+                if (comparisonBody) {
+                    comparisonBody.innerHTML = '';
                 }
-            });
+            }
+            
+            // Auto-generate!
+            generateVisualization(false);
         }
 
-        async function fetchInfluenceChart(rowIndex) {
-            console.log("Fetching influence for row:", rowIndex);
+        function setTab(tabName) {
+            currentTab = tabName;
             
-            const response = await fetch('http://127.0.0.1:8000/get-influence', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ row_index: rowIndex })
-            });
+            document.getElementById('btn-shap').classList.remove('active');
+            document.getElementById('btn-influence').classList.remove('active');
+            document.getElementById(`btn-${tabName}`).classList.add('active');
             
-            const spec = await response.json();
+            // Swap the main side panels
+            document.getElementById('comparison-panel').style.display = tabName === 'influence' ? 'block' : 'none';
+            document.getElementById('shap-panel').style.display = tabName === 'shap' ? 'block' : 'none';
             
-            // Render the Influence Chart
-            const result = await vegaEmbed('#influence', spec);
+            // NEW: Explicitly hide the prediction diff container if we aren't on the SHAP tab.
+            // (Assuming the parent wrapper of your diff text has an id, or target the readout directly)
+            const diffDisplay = document.getElementById('new-prediction-display');
+            if (diffDisplay && diffDisplay.parentElement) {
+                diffDisplay.parentElement.style.display = tabName === 'shap' ? 'block' : 'none';
+            }
+            
+            // Regenerate the chart for the newly active tab
+            if (selectedPlayerIndex !== null) {
+                generateVisualization(true);
+            }
+        }
 
-            // Add click listener to the Influence Chart bars
-            result.view.addEventListener('click', function(event, item) {
-                if (item && item.datum && item.datum.TrainIndex !== undefined) {
-                    sendTrainClick(item.datum.TrainIndex);
+        async function fetchComparisonData(testIdx, trainPlayerName) {
+            try {
+                const response = await fetch(`${API_BASE}/compare/${testIdx}/${encodeURIComponent(trainPlayerName)}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    console.error(data.error);
+                    return;
                 }
+
+                // Show the panel and set colored headers
+                document.getElementById('comparison-panel').style.display = 'block';
+                
+                // Cyan for Test Player, Magenta for Train Player
+                document.getElementById('compare-title').innerHTML = `
+                    <span style="color: #00b5e2; font-weight: bold;">${data.test_player}</span> 
+                    vs. 
+                    <span style="color: #e83e8c; font-weight: bold;">${data.train_player}</span>
+                `;
+                
+                document.getElementById('th-test').innerHTML = `<span style="color: #00b5e2;">■</span> ${data.test_player}`;
+                document.getElementById('th-train').innerHTML = `<span style="color: #e83e8c;">■</span> ${data.train_player}`;
+
+                const tbody = document.getElementById('compare-body');
+                tbody.innerHTML = '';
+
+                // Populate the rows
+                data.stats.forEach(stat => {
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = "1px solid #eee";
+                    
+                    // Add some color to the difference column so it's easy to read at a glance
+                    let diffColor = "#333";
+                    if (stat.diff > 0) diffColor = "#2ca02c"; // Green for positive diff
+                    if (stat.diff < 0) diffColor = "#d62728"; // Red for negative diff
+                    
+                    const diffFormatted = stat.diff > 0 ? `+${stat.diff.toFixed(2)}` : stat.diff.toFixed(2);
+
+                    tr.innerHTML = `
+                        <td style="padding: 10px 5px; font-weight: 500;">${stat.feature}</td>
+                        <td style="padding: 10px 5px;">${stat.test_val.toFixed(2)}</td>
+                        <td style="padding: 10px 5px;">${stat.train_val.toFixed(2)}</td>
+                        <td style="padding: 10px 5px; color: ${diffColor}; font-weight: bold;">${diffFormatted}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (error) {
+                console.error("Error fetching comparison data:", error);
+            }
+        }
+
+        async function generateVisualization(isUpdate = false, killOverrides = false) {
+            if (selectedPlayerIndex === null) return;
+
+            if (currentTab === 'shap') {
+                try {
+                    if (killOverrides) currentOverrides = {};
+
+                    const response = await fetch(`${API_BASE}/shap/${selectedPlayerIndex}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ overrides: currentOverrides })
+                    });
+                    const data = await response.json();
+                    
+                    vegaEmbed('#vis', data.spec, {renderer: 'svg', actions: false});
+                    
+                    // UPDATE THE PREDICTION READOUT
+                    const initProbPercent = (data.initial_probability * 100);
+                    const probPercent = (data.final_probability * 100).toFixed(1);
+                    const diff = (data.final_probability - data.initial_probability) * 100;
+                    const diffFormatted = diff > 0 ? `+${diff.toFixed(1)}%` : `${diff.toFixed(1)}%`;
+                    const color = diff > 0 ? '#2ca02c' : (diff < 0 ? '#d62728' : '#333');
+
+                    console.log(diffFormatted)
+
+                    document.getElementById('new-prediction-display').innerText = `${probPercent}% (${diffFormatted})`;
+                    document.getElementById('new-prediction-display').style.color = color;
+
+                    if (!isUpdate) buildSliders(data.all_features, data.current_stats, data.ranges);
+                    
+                } catch (error) { console.error("Error:", error); }
+            } else {
+                // Influence GET Request
+                try {
+                    const response = await fetch(`${API_BASE}/influence/${selectedPlayerIndex}`);
+                    const vegaSpec = await response.json();
+                    vegaEmbed('#vis', vegaSpec, {renderer: 'svg', actions: false}).then(result => {
+                        result.view.addEventListener('click', function(event, item) {
+                            if (item && item.datum && item.datum.train_player) {
+                                fetchComparisonData(selectedPlayerIndex, item.datum.train_player);
+                            }
+                        });
+                    });
+                } catch (error) { console.error("Error:", error); }
+            }
+        }
+
+        function buildSliders(allFeatures, currentStats, ranges) {
+            const container = document.getElementById('sliders-container');
+            container.innerHTML = '';
+            
+            allFeatures.forEach(feature => {
+                const wrapper = document.createElement('div');
+                const val = currentStats[feature];
+                const r = ranges[feature];
+                
+                wrapper.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold;">
+                        <span>${feature}</span>
+                        <span id="val-${feature}" style="color: #008bfb;">${val.toFixed(2)}</span>
+                    </div>
+                    <input type="range" id="slide-${feature}" 
+                           min="${r.min}" max="${r.max}" step="${r.step}" value="${val}"
+                           style="width: 100%; cursor: pointer;">
+                `;
+                container.appendChild(wrapper);
+
+                const slider = document.getElementById(`slide-${feature}`);
+                const label = document.getElementById(`val-${feature}`);
+                
+                // Update text instantly on drag, but wait for 'change' (mouse up) to fire backend
+                slider.addEventListener('input', (e) => {
+                    label.innerText = parseFloat(e.target.value).toFixed(2);
+                });
+                
+                slider.addEventListener('change', (e) => {
+                    currentOverrides[feature] = parseFloat(e.target.value);
+                    generateVisualization(isUpdate = true, killOverrides = false); // true = isUpdate (don't rebuild sliders)
+                });
             });
         }
 
-        async function sendTrainClick(trainIndex) {
-        console.log("Sending Training Click:", trainIndex);
-        
-            const response = await fetch('http://127.0.0.1:8000/log-train-click', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ train_index: trainIndex })
-            });
-
-            const spec = await response.json();
-            await vegaEmbed('#stats', spec);
-        }
     </script>
 </body>
 </html>
