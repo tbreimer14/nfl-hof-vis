@@ -1,3 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch
 fastapi
 uvicorn
 altair
@@ -5,7 +8,6 @@ pandas
 scikit-learn
 shap
 pyDVL
-torch
 distributed
 zarr
 numpy<2.0.0
