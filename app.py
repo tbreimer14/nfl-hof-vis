@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 app = FastAPI()
 
 # Mount static files (like your CSS or JS if they are in a folder)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+#app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def serve_index():
