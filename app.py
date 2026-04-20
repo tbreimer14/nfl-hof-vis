@@ -16,8 +16,17 @@ import uvicorn
 from pydantic import BaseModel
 from typing import Dict, Optional
 from scipy.special import expit
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+# Mount static files (like your CSS or JS if they are in a folder)
+# app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app = FastAPI()
+
+@app.get("/")
+async def serve_index():
+    return FileResponse("index.html")
 
 app.add_middleware(
     CORSMiddleware,
