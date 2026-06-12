@@ -11,3 +11,4 @@ pyDVL
 distributed
 zarr
 numpy<2.0.0
+gunicorn
