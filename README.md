@@ -1,6 +1,6 @@
 # nfl-hof-vis
 
-An Interactive Machine Learning System (IML) for explaining logistic regression decisions made for NFL Quarterback HOF candidacy.
+An Interactive Machine Learning System (IML) for explaining logistic regression decisions made for NFL Quarterback HOF (HOF) candidacy.
 
 ## Running with Docker
 
@@ -10,7 +10,7 @@ docker compose up --build
 ```
 
 **2. Open the app**
-Visit [http://localhost:8501](http://localhost:8501).
+Visit [http://localhost:8000](http://localhost:8000).
 
 **Other commands**
 ```bash
